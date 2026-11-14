@@ -664,7 +664,7 @@ impl nj_platform::storage::keymanager::Rpc for Db8 {
             }
             "luna://com.palm.db/put" => {
                 let mut next = payload["objects"][0].clone();
-                if let Some(current) = &self.record {
+                if let Some(current) = self.record.as_ref().filter(|r| r["_id"] == next["_id"]) {
                     assert_eq!(
                         next["_rev"], current["_rev"],
                         "real coordinator must CAS the loaded DB8 revision"
@@ -674,8 +674,19 @@ impl nj_platform::storage::keymanager::Rpc for Db8 {
                 next["_rev"] = serde_json::json!(self.puts);
                 self.record = Some(next);
                 Ok(
-                    serde_json::json!({"returnValue":true,"results":[{"id":"plxstate.stable","rev":self.puts}]}),
+                    serde_json::json!({"returnValue":true,"results":[{"id":"njstate.stable","rev":self.puts}]}),
                 )
+            }
+            // The helper's one-time legacy-id move (issue #39): `find` over our own kind, and a
+            // purge that only removes the record if it still carries the id asked for.
+            "luna://com.palm.db/find" => Ok(
+                serde_json::json!({"returnValue":true,"results":self.record.iter().cloned().collect::<Vec<_>>()}),
+            ),
+            "luna://com.palm.db/del" => {
+                if self.record.as_ref().is_some_and(|r| payload["ids"][0] == r["_id"]) {
+                    self.record = None;
+                }
+                Ok(serde_json::json!({"returnValue":true}))
             }
             _ => panic!("ACL-tier scenario must not bypass DB8 or invoke a Keymanager RPC"),
         }
@@ -1186,6 +1197,11 @@ mod published_06 {
         ))
         .unwrap();
         let mut backend = helper(Some(record));
+        // A 0.6.6 TV stored this under the legacy id; the helper moves it once, then the reopen
+        // itself writes nothing.
+        backend.migrate_legacy().unwrap();
+        assert_eq!(backend.rpc.record.as_ref().unwrap()["_id"], "njstate.stable");
+        backend.rpc.puts = 0;
         let session = opened("0.6.6 DB8", boot(&mut backend, &mut opener(), &[]));
         assert_carried(
             "0.6.6 DB8",

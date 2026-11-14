@@ -1,0 +1,47 @@
+# FORK-ONLY test build for issue #39. Never part of the upstream PR.
+# Builds the stable flavour (com.sostk.nativejelly) with RELEASE=1 and NO telemetry credentials,
+# using the same toolchain steps as build-package.yml, minus the maintainer-only Sentry and
+# publication gates. The .ipk is uploaded as the run's artifact.
+name: fork test build (#39)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/39-test-build]
+
+jobs:
+  build:
+    if: github.repository != 'sostk/native-jelly'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install pinned nightly Rust
+        run: |
+          rustup toolchain install "$RUST_NIGHTLY" --profile minimal --component rust-src
+          rustup run "$RUST_NIGHTLY" rustc --version
+        env:
+          RUST_NIGHTLY: nightly-2026-07-02
+
+      - id: ndk
+        uses: ./.github/actions/webos-ndk
+
+      - name: Build + package (stable, RELEASE=1, no telemetry)
+        env:
+          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
+          RUST_NIGHTLY: nightly-2026-07-02
+          RELEASE: "1"
+          FLAVOR: stable
+        run: |
+          make -j"$(nproc)"
+          make ipk
+          ls -l pkg/*.ipk
+          sha256sum pkg/*.ipk
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nativejelly-issue39-stable-ipk
+          path: pkg/*.ipk
+          if-no-files-found: error
+          retention-days: 14

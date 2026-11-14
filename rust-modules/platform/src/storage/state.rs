@@ -15,11 +15,13 @@ pub const LEDGER_CAPACITY: usize = 16;
 
 // Install identities come from the packaging manifest via `build_support/install_identities.rs`,
 // called from each package's build.rs (the platform crate and the storage helper).
-// Compatibility: plxstate.stable/debug are live DB8 keys and must never change. The allowlist
-// landed in 6f78842e (2026-09-17), before nightly in 1c96bb7e (2026-09-19). Nightly now uses
-// plxstate.night (14 bytes): on webOS 4.10.2, the earlier 16-byte ID failed get with -995
-// (generated base64 ID), and the 18-byte ID failed put with -3968 ("Invalid _id length").
-// Neither ID ever stored anything, so there is nothing to migrate.
+// Compatibility: DB8 `_id`s are global across every kind on the TV. Through v0.10.0 the installs
+// used plxstate.{stable,debug,night}, the same ids upstream PlxNative writes into its own private
+// kinds, so whichever app was installed second could not read its state (-3963, issue #39). They
+// now use njstate.{stable,debug,night}; each flavor's `legacy_object_id` is its old id, which the
+// helper moves once (`Backend::migrate_legacy`) and then deletes so upstream can use it again.
+// On webOS 4.10.2 a 16-byte ID failed get with -995 (generated base64 ID), and an 18-byte ID
+// failed put with -3968 ("Invalid _id length"); custom IDs stay within 1..=15 bytes.
 // Flavor is serialized as snake_case. An old binary rejects the unknown "nightly" variant
 // (decode returns Invalid, not empty state); separate object IDs keep stable/debug from reading
 // nightly records in normal use, so neither existing namespace is rewritten on downgrade.
@@ -1020,12 +1022,15 @@ mod tests {
 
     #[test]
     fn exact_ids_and_key_names() {
-        assert_eq!(Flavor::Stable.object_id().as_bytes(), b"plxstate.stable");
-        assert_eq!(Flavor::Debug.object_id().as_bytes(), b"plxstate.debug");
-        assert_eq!(Flavor::Nightly.object_id().as_bytes(), b"plxstate.night");
-        assert_eq!(Flavor::Stable.object_id().len(), 15);
-        assert_eq!(Flavor::Debug.object_id().len(), 14);
-        assert_eq!(Flavor::Nightly.object_id().len(), 14);
+        assert_eq!(Flavor::Stable.object_id().as_bytes(), b"njstate.stable");
+        assert_eq!(Flavor::Debug.object_id().as_bytes(), b"njstate.debug");
+        assert_eq!(Flavor::Nightly.object_id().as_bytes(), b"njstate.night");
+        assert_eq!(Flavor::Stable.legacy_object_id(), Some("plxstate.stable"));
+        assert_eq!(Flavor::Debug.legacy_object_id(), Some("plxstate.debug"));
+        assert_eq!(Flavor::Nightly.legacy_object_id(), Some("plxstate.night"));
+        assert_eq!(Flavor::Stable.object_id().len(), 14);
+        assert_eq!(Flavor::Debug.object_id().len(), 13);
+        assert_eq!(Flavor::Nightly.object_id().len(), 13);
         assert_eq!(Generation([0; 16]).key_name(), "a.AAAAAAAAAAAAAAAAAAAAAA");
         assert_eq!(Generation([255; 16]).key_name(), "a._____________________w");
     }
@@ -1867,5 +1872,26 @@ mod install_identity_tests {
             ids.iter().collect::<std::collections::HashSet<_>>().len(),
             ids.len()
         );
+    }
+
+    /// Issue #39: DB8 `_id`s are global across every kind on the TV, not per app. Upstream
+    /// PlxNative (`com.beb.plxnative*`) owns `plxstate.{stable,debug,night}` in its own private
+    /// kinds, so reusing one made our helper's `get` fail with -3963 whenever both were installed.
+    #[test]
+    fn no_install_identity_reuses_an_upstream_plxnative_object_id() {
+        const UPSTREAM: [&str; 3] = ["plxstate.stable", "plxstate.debug", "plxstate.night"];
+        let identities: Vec<Value> =
+            serde_json::from_str(include_str!("../../../../ci/install-identities.json")).unwrap();
+        for identity in &identities {
+            let object = identity["object_id"].as_str().unwrap();
+            assert!(
+                !UPSTREAM.contains(&object),
+                "{} reuses upstream PlxNative's DB8 object id {object:?}",
+                identity["name"]
+            );
+        }
+        for flavor in [Flavor::Stable, Flavor::Debug, Flavor::Nightly] {
+            assert!(!UPSTREAM.contains(&flavor.object_id()), "{flavor:?}");
+        }
     }
 }

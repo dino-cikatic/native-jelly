@@ -2,16 +2,19 @@
   {
     "name": "stable",
     "app_id": "com.sostk.nativejelly",
-    "object_id": "plxstate.stable"
+    "object_id": "njstate.stable",
+    "legacy_object_id": "plxstate.stable"
   },
   {
     "name": "debug",
     "app_id": "com.sostk.nativejelly.debug",
-    "object_id": "plxstate.debug"
+    "object_id": "njstate.debug",
+    "legacy_object_id": "plxstate.debug"
   },
   {
     "name": "nightly",
     "app_id": "com.sostk.nativejelly.nightly",
-    "object_id": "plxstate.night"
+    "object_id": "njstate.night",
+    "legacy_object_id": "plxstate.night"
   }
 ]

@@ -1305,7 +1305,18 @@ mod upgrade_tests {
                     let rev = self.record.as_ref().and_then(|r| r["_rev"].as_u64()).unwrap_or(0) + 1;
                     next["_rev"] = serde_json::json!(rev);
                     self.record = Some(next);
-                    Ok(serde_json::json!({"returnValue":true,"results":[{"id":"plxstate.stable","rev":rev}]}))
+                    Ok(serde_json::json!({"returnValue":true,"results":[{"id":"njstate.stable","rev":rev}]}))
+                }
+                // The helper's one-time legacy-id move (issue #39): `find` over our own kind, and a
+                // purge that only removes the record if it still carries the id asked for.
+                "luna://com.palm.db/find" => Ok(
+                    serde_json::json!({"returnValue":true,"results":self.record.iter().cloned().collect::<Vec<_>>()}),
+                ),
+                "luna://com.palm.db/del" => {
+                    if self.record.as_ref().is_some_and(|r| payload["ids"][0] == r["_id"]) {
+                        self.record = None;
+                    }
+                    Ok(serde_json::json!({"returnValue":true}))
                 }
                 other => panic!("unexpected DB8/Keymanager call {other}"),
             }
@@ -1323,8 +1334,14 @@ mod upgrade_tests {
         )
     }
 
-    fn db8_066() -> Value {
-        serde_json::from_str(DB8_066).unwrap()
+    /// A helper over the record a 0.6.6 TV stored under the legacy id, after the helper's one-time
+    /// move to the current id (issue #39). The move's own put is not counted as the test's write.
+    fn backend_066() -> nj_platform::storage::backend::Backend<Db8> {
+        let mut b = backend(Some(serde_json::from_str(DB8_066).unwrap()));
+        b.migrate_legacy().unwrap();
+        assert_eq!(b.rpc.record.as_ref().unwrap()["_id"], "njstate.stable");
+        b.rpc.puts = 0;
+        b
     }
 
     fn helper_load(b: &mut nj_platform::storage::backend::Backend<Db8>, legacy: &[PathBuf]) -> Consent {
@@ -1411,7 +1428,7 @@ mod upgrade_tests {
     fn a_066_db8_record_reopens_every_consent_field_without_writing() {
         let _g = nj_base::testlock::serial();
         let _dir = Dir::new("db8-066");
-        let mut b = backend(Some(db8_066()));
+        let mut b = backend_066();
         let loaded = helper_load(&mut b, &[]);
         assert_preserved("0.6.6 DB8", &loaded, GENERATED_DECLINE_065);
         assert_eq!(b.rpc.puts, 0);
@@ -1432,7 +1449,7 @@ mod upgrade_tests {
     fn a_07_settings_answer_over_a_066_record_keeps_scopes_declines_and_policy_version() {
         let _g = nj_base::testlock::serial();
         let _dir = Dir::new("db8-edit");
-        let mut b = backend(Some(db8_066()));
+        let mut b = backend_066();
         let loaded = helper_load(&mut b, &[]);
         let next = super::super::consent::apply(&loaded, true, true, || Some("f".repeat(32)));
         assert_eq!(helper_record(&mut b, &next).write, PersistResult::Durable);
@@ -1499,7 +1516,7 @@ mod upgrade_tests {
     fn a_session_commit_landing_mid_write_does_not_drop_the_decision() {
         let _g = nj_base::testlock::serial();
         let _dir = Dir::new("db8-race");
-        let mut b = backend(Some(db8_066()));
+        let mut b = backend_066();
         let loaded = helper_load(&mut b, &[]);
         let next = super::super::consent::apply(&loaded, false, false, || None);
         let outcome = record_racing(&mut b, &next, |snapshot| {
@@ -1524,7 +1541,7 @@ mod upgrade_tests {
     fn a_decision_racing_a_sign_out_is_not_written_into_the_cleared_tenure() {
         let _g = nj_base::testlock::serial();
         let _dir = Dir::new("db8-race-clear");
-        let mut b = backend(Some(db8_066()));
+        let mut b = backend_066();
         let loaded = helper_load(&mut b, &[]);
         let next = super::super::consent::apply(&loaded, true, true, || Some("f".repeat(32)));
         let outcome = record_racing(&mut b, &next, |_| nj_platform::storage::wire::WireMutation::ClearTenure {});
@@ -1537,7 +1554,7 @@ mod upgrade_tests {
     fn a_decision_racing_a_fresh_sign_in_is_not_written_into_the_new_account() {
         let _g = nj_base::testlock::serial();
         let _dir = Dir::new("db8-race-signin");
-        let mut b = backend(Some(db8_066()));
+        let mut b = backend_066();
         let loaded = helper_load(&mut b, &[]);
         let next = super::super::consent::apply(&loaded, true, true, || Some("f".repeat(32)));
         let outcome = record_racing(&mut b, &next, |snapshot| {
@@ -1565,7 +1582,7 @@ mod upgrade_tests {
     fn a_db8_sign_out_outranks_a_reappeared_legacy_yes() {
         let _g = nj_base::testlock::serial();
         let dir = Dir::new("db8-cleared");
-        let mut b = backend(Some(db8_066()));
+        let mut b = backend_066();
         let mut transport = |request: Request| Ok(b.dispatch(request));
         let nj_platform::storage::client::Load::Present(snapshot) =
             nj_platform::storage::client::load_with(&mut transport).unwrap()
